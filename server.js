@@ -7,15 +7,12 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: "*"
   }
 });
 
-app.use(express.static("public"));
-
 io.on("connection", socket => {
-  console.log("Usuário conectado:", socket.id);
+  console.log("Conectou:", socket.id);
 
   socket.on("join-room", room => {
     socket.join(room);
@@ -28,9 +25,13 @@ io.on("connection", socket => {
       signal: data.signal
     });
   });
+
+  socket.on("disconnect", () => {
+    console.log("Saiu:", socket.id);
+  });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log("Servidor rodando na porta", PORT);
-});
+server.listen(PORT, () =>
+  console.log("Servidor online")
+);
