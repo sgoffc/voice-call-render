@@ -14,11 +14,21 @@ const io = new Server(server, {
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
 
-  socket.on("join-room", room => {
+  // ENTRAR NA SALA (mesma lógica, só passa user)
+  socket.on("join-room", ({ room, user }) => {
     socket.join(room);
-    socket.to(room).emit("user-joined", socket.id);
+
+    // guarda o usuário no socket
+    socket.user = user;
+
+    // avisa os outros da sala QUEM entrou
+    socket.to(room).emit("user-joined", {
+      id: socket.id,
+      user
+    });
   });
 
+  // WEBRTC SIGNAL (NÃO ALTERADO)
   socket.on("signal", data => {
     io.to(data.to).emit("signal", {
       from: socket.id,
@@ -26,12 +36,16 @@ io.on("connection", socket => {
     });
   });
 
+  // QUANDO SAI
   socket.on("disconnect", () => {
+    if (socket.user) {
+      socket.broadcast.emit("user-left", socket.id);
+    }
     console.log("Saiu:", socket.id);
   });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () =>
-  console.log("Servidor online")
-);
+server.listen(PORT, () => {
+  console.log("Servidor online");
+});
