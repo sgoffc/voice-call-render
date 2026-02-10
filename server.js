@@ -14,10 +14,21 @@ io.on("connection", socket => {
 
   socket.on("join-room", ({ room, user }) => {
     socket.join(room);
-
-    // guarda o user no socket (não muda lógica)
     socket.user = user;
+    socket.room = room;
 
+    // pega quem já está na sala
+    const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
+      .filter(id => id !== socket.id)
+      .map(id => {
+        const s = io.sockets.sockets.get(id);
+        return { id, user: s.user };
+      });
+
+    // envia a lista para quem entrou
+    socket.emit("room-users", clients);
+
+    // avisa os outros da sala
     socket.to(room).emit("user-joined", {
       id: socket.id,
       user
@@ -32,7 +43,9 @@ io.on("connection", socket => {
   });
 
   socket.on("disconnect", () => {
-    socket.broadcast.emit("user-left", socket.id);
+    if (socket.room) {
+      socket.to(socket.room).emit("user-left", socket.id);
+    }
     console.log("Saiu:", socket.id);
   });
 });
