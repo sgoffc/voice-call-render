@@ -9,7 +9,7 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-const rooms = {}; // manter lista de usuários por sala
+const rooms = {}; // lista de usuários por sala
 
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
@@ -22,7 +22,7 @@ io.on("connection", socket => {
     // envia lista atualizada para todos na sala
     io.to(room).emit("user-list", rooms[room]);
 
-    // avisa outros que entrou
+    // avisa que novo usuário entrou
     socket.to(room).emit("user-joined", { id: socket.id, ...user });
   });
 
