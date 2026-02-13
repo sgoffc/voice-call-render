@@ -9,15 +9,29 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
+// 🔥 Controle global por usuário
+const activeUsers = new Map(); // userId -> socketId
+
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
 
   socket.on("join-room", ({ room, user }) => {
+
+    // 🔥 Se usuário já estiver conectado, derruba antigo
+    if (activeUsers.has(user.id)) {
+      const oldSocketId = activeUsers.get(user.id);
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
+      if (oldSocket) {
+        oldSocket.disconnect(true);
+      }
+    }
+
+    activeUsers.set(user.id, socket.id);
+
     socket.join(room);
     socket.user = user;
     socket.room = room;
 
-    // pega quem já está na sala
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
       .map(id => {
@@ -25,10 +39,8 @@ io.on("connection", socket => {
         return { id, user: s.user };
       });
 
-    // envia a lista para quem entrou
     socket.emit("room-users", clients);
 
-    // avisa os outros da sala
     socket.to(room).emit("user-joined", {
       id: socket.id,
       user
@@ -43,9 +55,15 @@ io.on("connection", socket => {
   });
 
   socket.on("disconnect", () => {
+
+    if (socket.user && activeUsers.get(socket.user.id) === socket.id) {
+      activeUsers.delete(socket.user.id);
+    }
+
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
     }
+
     console.log("Saiu:", socket.id);
   });
 });
