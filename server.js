@@ -21,8 +21,7 @@ io.on("connection", socket => {
     if (activeUsers.has(user.id)) {
       const oldSocketId = activeUsers.get(user.id);
       const oldSocket = io.sockets.sockets.get(oldSocketId);
-      if (oldSocket && oldSocket.id !== socket.id) {
-        oldSocket.emit("force-leave"); // 👈 Notifica o antigo para sair da call
+      if (oldSocket) {
         oldSocket.disconnect(true);
       }
     }
@@ -55,17 +54,8 @@ io.on("connection", socket => {
     });
   });
 
-  // 🔹 Evento específico para sair da call sem desconectar todo o socket
-  socket.on("leave-room", () => {
-    if (socket.room && socket.user) {
-      socket.to(socket.room).emit("user-left", socket.id);
-      activeUsers.delete(socket.user.id);
-      socket.leave(socket.room);
-      socket.room = null;
-    }
-  });
-
   socket.on("disconnect", () => {
+
     if (socket.user && activeUsers.get(socket.user.id) === socket.id) {
       activeUsers.delete(socket.user.id);
     }
