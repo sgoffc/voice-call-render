@@ -9,8 +9,19 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// 🔥 Controle global por usuário
+// 🔥 Controle global por usuário (evita duplicação de login)
 const activeUsers = new Map(); // userId -> socketId
+
+// 🔥 FUNÇÃO CENTRALIZADA PARA EMITIR LISTA REAL DA SALA
+function emitRoomUsers(room) {
+  const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
+    .map(id => {
+      const s = io.sockets.sockets.get(id);
+      return { id, user: s.user };
+    });
+
+  io.to(room).emit("room-users", clients);
+}
 
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
@@ -32,19 +43,8 @@ io.on("connection", socket => {
     socket.user = user;
     socket.room = room;
 
-    const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
-      .filter(id => id !== socket.id)
-      .map(id => {
-        const s = io.sockets.sockets.get(id);
-        return { id, user: s.user };
-      });
-
-    socket.emit("room-users", clients);
-
-    socket.to(room).emit("user-joined", {
-      id: socket.id,
-      user
-    });
+    // 🔥 Atualiza lista REAL para todos da sala
+    emitRoomUsers(room);
   });
 
   socket.on("signal", data => {
@@ -56,12 +56,14 @@ io.on("connection", socket => {
 
   socket.on("disconnect", () => {
 
+    // 🔥 Remove do controle global
     if (socket.user && activeUsers.get(socket.user.id) === socket.id) {
       activeUsers.delete(socket.user.id);
     }
 
+    // 🔥 Atualiza lista REAL para todos
     if (socket.room) {
-      socket.to(socket.room).emit("user-left", socket.id);
+      emitRoomUsers(socket.room);
     }
 
     console.log("Saiu:", socket.id);
