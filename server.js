@@ -9,21 +9,26 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// 🔥 Controle global por usuário
+// 🔥 controle de usuário ativo
 const activeUsers = new Map(); // userId -> socketId
+
+// 🔥 NOVO: bloqueios entre usuários (bidirecional)
+const blockedPairs = new Set();
+// formato: "userA-userB" (ordenado)
+
+function pairKey(a, b) {
+  return [a, b].sort().join("-");
+}
 
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
 
   socket.on("join-room", ({ room, user }) => {
 
-    // 🔥 Se usuário já estiver conectado, derruba antigo
     if (activeUsers.has(user.id)) {
       const oldSocketId = activeUsers.get(user.id);
       const oldSocket = io.sockets.sockets.get(oldSocketId);
-      if (oldSocket) {
-        oldSocket.disconnect(true);
-      }
+      if (oldSocket) oldSocket.disconnect(true);
     }
 
     activeUsers.set(user.id, socket.id);
@@ -47,11 +52,35 @@ io.on("connection", socket => {
     });
   });
 
+  // 🔥 SIGNAL WebRTC (inalterado)
   socket.on("signal", data => {
     io.to(data.to).emit("signal", {
       from: socket.id,
       signal: data.signal
     });
+  });
+
+  // ================================
+  // 🔥 NOVO: MUTE BIDIRECIONAL
+  // ================================
+  socket.on("toggle-mute-user", ({ targetId }) => {
+    const from = socket.id;
+    const key = pairKey(from, targetId);
+
+    const isBlocked = blockedPairs.has(key);
+
+    if (isBlocked) {
+      blockedPairs.delete(key);
+
+      io.to(from).emit("user-unmuted", { targetId });
+      io.to(targetId).emit("user-unmuted", { targetId: from });
+
+    } else {
+      blockedPairs.add(key);
+
+      io.to(from).emit("user-muted", { targetId });
+      io.to(targetId).emit("user-muted", { targetId: from });
+    }
   });
 
   socket.on("disconnect", () => {
@@ -62,6 +91,13 @@ io.on("connection", socket => {
 
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
+    }
+
+    // limpa bloqueios envolvendo esse socket
+    for (const key of blockedPairs) {
+      if (key.includes(socket.id)) {
+        blockedPairs.delete(key);
+      }
     }
 
     console.log("Saiu:", socket.id);
