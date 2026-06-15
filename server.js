@@ -16,6 +16,16 @@ const activeUsers = new Map(); // userId -> socketId
 const blockedPairs = new Set();
 // formato: "userA-userB" (ordenado)
 
+// 🔥 NOVO: limites por sala
+const ROOM_LIMITS = {
+  "sala-geral": 16,
+  "sala-amigos": 4,
+  "sala-gaming": 8,
+  "sala-ranked": 10,
+  "sala-squad": 5,
+  "sala-resenha": 20
+};
+
 function pairKey(a, b) {
   return [a, b].sort().join("-");
 }
@@ -25,10 +35,24 @@ io.on("connection", socket => {
 
   socket.on("join-room", ({ room, user }) => {
 
+    // desconecta sessão antiga do mesmo usuário
     if (activeUsers.has(user.id)) {
       const oldSocketId = activeUsers.get(user.id);
       const oldSocket = io.sockets.sockets.get(oldSocketId);
       if (oldSocket) oldSocket.disconnect(true);
+    }
+
+    // 🔥 NOVO: checagem de limite da sala
+    const roomSet = io.sockets.adapter.rooms.get(room);
+    const roomSize = roomSet ? roomSet.size : 0;
+    const roomLimit = ROOM_LIMITS[room] || 16;
+
+    if (roomSize >= roomLimit) {
+      socket.emit("room-full", {
+        room,
+        limit: roomLimit
+      });
+      return;
     }
 
     activeUsers.set(user.id, socket.id);
