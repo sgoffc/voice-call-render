@@ -9,38 +9,55 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// 🔥 controle de usuário ativo
-const activeUsers = new Map(); // userId -> socketId
+/* ========================= */
+/* CONTROLE DE USUÁRIOS */
+const activeUsers = new Map();
 
-// 🔥 NOVO: bloqueios entre usuários (bidirecional)
+/* ========================= */
+/* BLOQUEIO (mantido original) */
 const blockedPairs = new Set();
 
 function pairKey(a, b) {
   return [a, b].sort().join("-");
 }
 
+/* ========================= */
+/* SALAS COM LIMITE (FONTE ÚNICA REAL) */
+const ROOM_LIMITS = {
+  "sala-geral": 16,
+  "sala-events": 10,
+  "sala-duo": 2,
+  "sala-duo2": 2,
+  "sala-squad": 6,
+  "sala-squad2": 6
+};
+
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
 
-  socket.on("join-room", ({ room, user, limit }) => {
+  /* ========================= */
+  /* JOIN ROOM (CORRIGIDO DE VERDADE) */
+  socket.on("join-room", ({ room, user }) => {
 
+    const limit = ROOM_LIMITS[room] || 16;
+
+    /* remove usuário antigo (evita duplicação invisível) */
     if (activeUsers.has(user.id)) {
       const oldSocketId = activeUsers.get(user.id);
       const oldSocket = io.sockets.sockets.get(oldSocketId);
       if (oldSocket) oldSocket.disconnect(true);
     }
 
-    // 🔥 conta usuários na sala
     const roomSet = io.sockets.adapter.rooms.get(room);
     const roomSize = roomSet ? roomSet.size : 0;
 
-    // 🔥 limite vem do frontend (EndFonte)
-    const roomLimit = limit || 16;
-
-    if (roomSize >= roomLimit) {
+    /* 🔥 CORREÇÃO PRINCIPAL:
+       bloqueia ANTES de entrar na sala */
+    if (roomSize >= limit) {
       socket.emit("room-full", {
         room,
-        limit: roomLimit
+        limit,
+        current: roomSize
       });
       return;
     }
@@ -51,11 +68,12 @@ io.on("connection", socket => {
     socket.user = user;
     socket.room = room;
 
+    /* lista usuários atuais */
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
       .map(id => {
         const s = io.sockets.sockets.get(id);
-        return { id, user: s.user };
+        return { id, user: s?.user };
       });
 
     socket.emit("room-users", clients);
@@ -64,9 +82,12 @@ io.on("connection", socket => {
       id: socket.id,
       user
     });
+
+    console.log(`User ${user.name} entrou em ${room} (${roomSize + 1}/${limit})`);
   });
 
-  // 🔥 SIGNAL WebRTC (inalterado)
+  /* ========================= */
+  /* SIGNAL WEBRTC (INALTERADO) */
   socket.on("signal", data => {
     io.to(data.to).emit("signal", {
       from: socket.id,
@@ -74,9 +95,8 @@ io.on("connection", socket => {
     });
   });
 
-  // ================================
-  // 🔥 MUTE BIDIRECIONAL
-  // ================================
+  /* ========================= */
+  /* MUTE BIDIRECIONAL (INALTERADO) */
   socket.on("toggle-mute-user", ({ targetId }) => {
     const from = socket.id;
     const key = pairKey(from, targetId);
@@ -97,6 +117,8 @@ io.on("connection", socket => {
     }
   });
 
+  /* ========================= */
+  /* DISCONNECT */
   socket.on("disconnect", () => {
 
     if (socket.user && activeUsers.get(socket.user.id) === socket.id) {
