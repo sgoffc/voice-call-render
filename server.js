@@ -26,7 +26,7 @@ function pairKey(a, b) {
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
-  "sala-duo": 2,
+  "sala-duo": 1,
   "sala-duo2": 2,
   "sala-squad": 6,
   "sala-squad2": 6
