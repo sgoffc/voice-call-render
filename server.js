@@ -9,8 +9,22 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// =========================
-// SALAS (mantidas)
+/* ========================= */
+/* ESTADO GLOBAL */
+const activeUsers = new Map(); 
+// userId -> { socketId, room, user }
+
+const socketToUser = new Map();
+// socketId -> userId
+
+const blockedPairs = new Set();
+
+function pairKey(a, b) {
+  return [a, b].sort().join("-");
+}
+
+/* ========================= */
+/* SALAS */
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -20,70 +34,56 @@ const ROOM_LIMITS = {
   "sala-squad2": 4
 };
 
-// =========================
-// ESTADO GLOBAL
-const users = new Map(); // userId -> socketId
+/* ========================= */
+/* ENVIAR LISTA ATUALIZADA DA SALA (🔥 NOVO CORE) */
+function broadcastRoomUsers(room) {
+  const roomSockets = io.sockets.adapter.rooms.get(room);
 
-const voiceState = new Map();
-/*
-socketId => {
-  muted: bool,
-  deaf: bool,
-  serverMuted: bool
-}
-*/
+  if (!roomSockets) return;
 
-const permissions = new Map();
-/*
-userId => role (owner/admin/mod/user)
-*/
-
-const privateActions = new Set();
-/*
-"a-b" mute privado
-*/
-
-// =========================
-
-const pair = (a, b) => [a, b].sort().join("-");
-
-function roomCount(room) {
-  const r = io.sockets.adapter.rooms.get(room);
-  return r ? r.size : 0;
-}
-
-// =========================
-// PERMISSÕES
-// =========================
-function getRole(userId) {
-  return permissions.get(userId) || "user";
-}
-
-function canModerate(role) {
-  return role === "owner" || role === "admin" || role === "moderator";
-}
-
-// =========================
-// SOCKET
-// =========================
-io.on("connection", (socket) => {
-
-  voiceState.set(socket.id, {
-    muted: false,
-    deaf: false,
-    serverMuted: false
+  const users = Array.from(roomSockets).map(socketId => {
+    const s = io.sockets.sockets.get(socketId);
+    return {
+      socketId,
+      user: s?.user || null,
+      muted: s?.muted || false
+    };
   });
 
-  // =========================
-  // JOIN ROOM
-  // =========================
+  io.to(room).emit("room-users", users);
+}
+
+/* ========================= */
+io.on("connection", socket => {
+
+  socket.muted = false;
+
+  console.log("Conectou:", socket.id);
+
+  /* ========================= */
+  /* JOIN ROOM (REFORÇADO MAS MESMA LÓGICA) */
   socket.on("join-room", ({ room, user }) => {
-    if (!room || !user?.id) return;
 
     const limit = ROOM_LIMITS[room] || 16;
 
-    if (roomCount(room) >= limit) {
-      socket.emit("room-full");
+    if (!room || !user?.id) return;
+
+    /* remove login duplicado */
+    if (activeUsers.has(user.id)) {
+      const old = activeUsers.get(user.id);
+      const oldSocket = io.sockets.sockets.get(old.socketId);
+      if (oldSocket) oldSocket.disconnect(true);
+    }
+
+    const roomSet = io.sockets.adapter.rooms.get(room);
+    const roomSize = roomSet ? roomSet.size : 0;
+
+    if (roomSize >= limit) {
+      socket.emit("room-full", {
+        room,
+        limit,
+        current: roomSize
+      });
       return;
     }
 
@@ -91,155 +91,105 @@ io.on("connection", (socket) => {
     socket.user = user;
     socket.room = room;
 
-    users.set(user.id, socket.id);
+    activeUsers.set(user.id, {
+      socketId: socket.id,
+      room,
+      user
+    });
 
-    const list = Array.from(io.sockets.adapter.rooms.get(room) || [])
-      .filter(id => id !== socket.id)
-      .map(id => {
-        const s = io.sockets.sockets.get(id);
-        return { id, user: s?.user };
-      });
+    socketToUser.set(socket.id, user.id);
 
-    socket.emit("room-users", list);
+    /* 🔥 IMPORTANTE: envia lista atualizada PRA TODOS */
+    broadcastRoomUsers(room);
 
     socket.to(room).emit("user-joined", {
       id: socket.id,
       user
     });
 
-    io.to(room).emit("room-count", {
-      count: roomCount(room),
-      limit
-    });
+    console.log(`User ${user.name} entrou em ${room}`);
   });
 
-  // =========================
-  // WEBRTC SIGNAL
-  // =========================
-  socket.on("signal", (data) => {
+  /* ========================= */
+  /* SIGNAL WEBRTC (mantido) */
+  socket.on("signal", data => {
     io.to(data.to).emit("signal", {
       from: socket.id,
       signal: data.signal
     });
   });
 
-  // =========================
-  // 🎧 MUTE PRIVADO
-  // =========================
+  /* ========================= */
+  /* MUTE REAL MELHORADO */
   socket.on("toggle-mute-user", ({ targetId }) => {
 
-    const key = pair(socket.id, targetId);
+    const from = socket.id;
+    const key = pairKey(from, targetId);
 
-    if (privateActions.has(key)) {
-      privateActions.delete(key);
+    const targetSocket = io.sockets.sockets.get(targetId);
 
-      io.to(socket.id).emit("mute-update", {
-        targetId,
-        muted: false
-      });
+    if (!targetSocket) return;
 
-      io.to(targetId).emit("mute-update", {
-        targetId: socket.id,
-        muted: false
-      });
+    const isMuted = blockedPairs.has(key);
 
-      return;
+    if (isMuted) {
+      blockedPairs.delete(key);
+
+      io.to(from).emit("user-unmuted", { targetId });
+      io.to(targetId).emit("user-unmuted", { targetId: from });
+
+    } else {
+      blockedPairs.add(key);
+
+      io.to(from).emit("user-muted", { targetId });
+      io.to(targetId).emit("user-muted", { targetId: from });
     }
 
-    privateActions.add(key);
-
-    io.to(socket.id).emit("mute-update", {
-      targetId,
-      muted: true
-    });
-
-    io.to(targetId).emit("mute-update", {
-      targetId: socket.id,
-      muted: true
-    });
+    /* 🔥 atualiza UI de todos */
+    const room = socket.room;
+    if (room) broadcastRoomUsers(room);
   });
 
-  // =========================
-  // 🔇 SELF MUTE
-  // =========================
-  socket.on("self-mute", (state) => {
-    const v = voiceState.get(socket.id);
-    if (v) v.muted = state;
-  });
+  /* ========================= */
+  /* MUTE GLOBAL (NOVO) */
+  socket.on("toggle-self-mute", () => {
+    socket.muted = !socket.muted;
 
-  // =========================
-  // 🛑 SERVER MUTE (PERMISSÃO)
-  // =========================
-  socket.on("server-mute", ({ targetId, state }) => {
+    const room = socket.room;
+    if (room) broadcastRoomUsers(room);
 
-    const requesterRole = getRole(socket.user?.id);
-
-    if (!canModerate(requesterRole)) return;
-
-    const v = voiceState.get(targetId);
-    if (!v) return;
-
-    v.serverMuted = state;
-
-    io.to(targetId).emit("server-mute-update", {
-      muted: state
+    io.to(room).emit("user-self-mute", {
+      socketId: socket.id,
+      muted: socket.muted
     });
   });
 
-  // =========================
-  // 🔇 DEAF
-  // =========================
-  socket.on("deafen", (state) => {
-    const v = voiceState.get(socket.id);
-    if (v) v.deaf = state;
-
-    socket.emit("deafen-update", { deaf: state });
-  });
-
-  // =========================
-  // 🎯 AÇÃO GENÉRICA (EXTENSÍVEL)
-  // =========================
-  socket.on("action", ({ type, payload }) => {
-
-    switch(type) {
-
-      case "kick":
-        socket.leave(socket.room);
-        socket.emit("kicked");
-        break;
-
-      case "set-role":
-        permissions.set(payload.userId, payload.role);
-        break;
-
-      case "lock-room":
-        ROOM_LIMITS[socket.room] = 0;
-        break;
-
-    }
-  });
-
-  // =========================
-  // DISCONNECT
-  // =========================
+  /* ========================= */
+  /* DISCONNECT (REFORÇADO) */
   socket.on("disconnect", () => {
 
-    if (socket.user) {
-      users.delete(socket.user.id);
-    }
+    const userId = socketToUser.get(socket.id);
 
-    voiceState.delete(socket.id);
+    if (userId) {
+      activeUsers.delete(userId);
+      socketToUser.delete(socket.id);
+    }
 
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
-      io.to(socket.room).emit("room-count", {
-        count: roomCount(socket.room),
-        limit: ROOM_LIMITS[socket.room] || 16
-      });
+      broadcastRoomUsers(socket.room);
     }
+
+    for (const key of blockedPairs) {
+      if (key.includes(socket.id)) {
+        blockedPairs.delete(key);
+      }
+    }
+
+    console.log("Saiu:", socket.id);
   });
 });
 
 server.listen(3000, () => {
-  console.log("Servidor completo online");
+  console.log("Servidor online");
 });
