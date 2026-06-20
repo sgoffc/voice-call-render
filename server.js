@@ -10,11 +10,11 @@ const io = new Server(server, {
 });
 
 /* ========================= */
-/* USUÁRIOS */
+/* CONTROLE DE USUÁRIOS */
 const activeUsers = new Map();
 
 /* ========================= */
-/* BLOQUEIO */
+/* BLOQUEIO (mantido original) */
 const blockedPairs = new Set();
 
 function pairKey(a, b) {
@@ -22,7 +22,7 @@ function pairKey(a, b) {
 }
 
 /* ========================= */
-/* SALAS */
+/* SALAS COM LIMITE (FONTE ÚNICA REAL) */
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -32,40 +32,33 @@ const ROOM_LIMITS = {
   "sala-squad2": 4
 };
 
-/* ========================= */
-/* 🎧 ESTADO DE MÚSICA POR SALA */
-const roomMusic = new Map();
-
-function getRoom(room) {
-  if (!roomMusic.has(room)) {
-    roomMusic.set(room, {
-      hostId: null,
-      music: {
-        url: "",
-        isPlaying: false,
-        startedAt: 0,
-        volume: 1
-      }
-    });
-  }
-  return roomMusic.get(room);
-}
-
-/* ========================= */
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
 
   /* ========================= */
-  /* JOIN ROOM (SÓ QUANDO FRONT CHAMAR) */
+  /* JOIN ROOM (CORRIGIDO DE VERDADE) */
   socket.on("join-room", ({ room, user }) => {
 
     const limit = ROOM_LIMITS[room] || 16;
 
+    /* remove usuário antigo (evita duplicação invisível) */
+    if (activeUsers.has(user.id)) {
+      const oldSocketId = activeUsers.get(user.id);
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
+      if (oldSocket) oldSocket.disconnect(true);
+    }
+
     const roomSet = io.sockets.adapter.rooms.get(room);
     const roomSize = roomSet ? roomSet.size : 0;
 
+    /* 🔥 CORREÇÃO PRINCIPAL:
+       bloqueia ANTES de entrar na sala */
     if (roomSize >= limit) {
-      socket.emit("room-full", { room, limit, current: roomSize });
+      socket.emit("room-full", {
+        room,
+        limit,
+        current: roomSize
+      });
       return;
     }
 
@@ -75,6 +68,7 @@ io.on("connection", socket => {
     socket.user = user;
     socket.room = room;
 
+    /* lista usuários atuais */
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
       .map(id => {
@@ -89,11 +83,11 @@ io.on("connection", socket => {
       user
     });
 
-    console.log(`User ${user.name} entrou em ${room}`);
+    console.log(`User ${user.name} entrou em ${room} (${roomSize + 1}/${limit})`);
   });
 
   /* ========================= */
-  /* SIGNAL */
+  /* SIGNAL WEBRTC (INALTERADO) */
   socket.on("signal", data => {
     io.to(data.to).emit("signal", {
       from: socket.id,
@@ -102,7 +96,7 @@ io.on("connection", socket => {
   });
 
   /* ========================= */
-  /* MUTE */
+  /* MUTE BIDIRECIONAL (INALTERADO) */
   socket.on("toggle-mute-user", ({ targetId }) => {
     const from = socket.id;
     const key = pairKey(from, targetId);
@@ -111,77 +105,16 @@ io.on("connection", socket => {
 
     if (isBlocked) {
       blockedPairs.delete(key);
+
       io.to(from).emit("user-unmuted", { targetId });
       io.to(targetId).emit("user-unmuted", { targetId: from });
+
     } else {
       blockedPairs.add(key);
+
       io.to(from).emit("user-muted", { targetId });
       io.to(targetId).emit("user-muted", { targetId: from });
     }
-  });
-
-  /* ========================= */
-  /* 🤖 BOT (OPCIONAL, NÃO OBRIGATÓRIO) */
-  socket.on("bot:spawn", ({ room }) => {
-    const state = getRoom(room);
-
-    if (!state.hostId) {
-      state.hostId = socket.id;
-    }
-
-    io.to(room).emit("bot:spawned", {
-      hostId: state.hostId
-    });
-  });
-
-  socket.on("bot:leave", ({ room }) => {
-    const state = getRoom(room);
-
-    if (state.hostId === socket.id) {
-      state.hostId = null;
-    }
-
-    io.to(room).emit("bot:left");
-  });
-
-  /* ========================= */
-  /* 🎵 MÚSICA (SEM BLOQUEIO DE HOST) */
-
-  socket.on("music:set", ({ room, url }) => {
-    const state = getRoom(room);
-
-    state.music.url = url;
-
-    io.to(room).emit("music:set", { url });
-  });
-
-  socket.on("music:play", ({ room }) => {
-    const state = getRoom(room);
-
-    state.music.isPlaying = true;
-    state.music.startedAt = Date.now();
-
-    io.to(room).emit("music:play", {
-      url: state.music.url,
-      startTimestamp: state.music.startedAt,
-      volume: state.music.volume
-    });
-  });
-
-  socket.on("music:pause", ({ room }) => {
-    const state = getRoom(room);
-
-    state.music.isPlaying = false;
-
-    io.to(room).emit("music:pause");
-  });
-
-  socket.on("music:volume", ({ room, volume }) => {
-    const state = getRoom(room);
-
-    state.music.volume = volume;
-
-    io.to(room).emit("music:volume", { volume });
   });
 
   /* ========================= */
