@@ -9,7 +9,8 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-/* ========================= */
+// =========================
+// SALAS (mantido igual ao seu sistema)
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -19,131 +20,175 @@ const ROOM_LIMITS = {
   "sala-squad2": 4
 };
 
-/* ========================= */
-/* STATE */
-const activeUsers = new Map(); // userId -> { socketId, room }
-const privateMutes = new Map(); // "a-b" -> true
+// =========================
+// ESTADO GLOBAL
+const users = new Map(); 
+// userId -> socketId
 
-function pairKey(a, b) {
-  return [a, b].sort().join("-");
+const voiceState = new Map();
+// socketId -> { muted, deaf, serverMuted }
+
+const privateMute = new Set();
+// "a-b"
+
+const key = (a, b) => [a, b].sort().join("-");
+
+function roomCount(room) {
+  const r = io.sockets.adapter.rooms.get(room);
+  return r ? r.size : 0;
 }
 
-function emitRoomCount(room) {
-  const roomSet = io.sockets.adapter.rooms.get(room);
-  const count = roomSet ? roomSet.size : 0;
-
+function emitRoomState(room) {
   io.to(room).emit("room-count", {
-    room,
-    count,
+    count: roomCount(room),
     limit: ROOM_LIMITS[room] || 16
   });
 }
 
-function removeAllMutes(userId) {
-  for (const [key, data] of privateMutes) {
-    if (key.includes(userId)) {
-      privateMutes.delete(key);
-    }
-  }
-}
+// =========================
 
-/* ========================= */
 io.on("connection", (socket) => {
 
+  voiceState.set(socket.id, {
+    muted: false,
+    deaf: false,
+    serverMuted: false
+  });
+
+  // =========================
+  // JOIN ROOM
+  // =========================
   socket.on("join-room", ({ room, user }) => {
     if (!room || !user?.id) return;
 
     const limit = ROOM_LIMITS[room] || 16;
 
-    // remove duplicado
-    if (activeUsers.has(user.id)) {
-      const old = activeUsers.get(user.id);
-      io.sockets.sockets.get(old.socketId)?.disconnect(true);
-    }
-
-    const roomSet = io.sockets.adapter.rooms.get(room);
-    const size = roomSet ? roomSet.size : 0;
-
-    if (size >= limit) {
-      socket.emit("room-full", { room, limit, current: size });
+    if (roomCount(room) >= limit) {
+      socket.emit("room-full");
       return;
     }
 
     socket.join(room);
-
     socket.user = user;
     socket.room = room;
 
-    activeUsers.set(user.id, {
-      socketId: socket.id,
-      room
-    });
+    users.set(user.id, socket.id);
 
-    // lista usuários
-    const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
+    const peers = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
       .map(id => {
         const s = io.sockets.sockets.get(id);
-        return { id: s?.user?.id || id, user: s?.user };
+        return { id, user: s?.user };
       });
 
-    socket.emit("room-users", clients);
+    socket.emit("room-users", peers);
 
     socket.to(room).emit("user-joined", {
       id: socket.id,
       user
     });
 
-    emitRoomCount(room);
+    emitRoomState(room);
   });
 
-  /* ========================= */
-  socket.on("signal", ({ to, signal }) => {
-    io.to(to).emit("signal", {
+  // =========================
+  // WEBRTC SIGNAL
+  // =========================
+  socket.on("signal", (data) => {
+    io.to(data.to).emit("signal", {
       from: socket.id,
-      signal
+      signal: data.signal
     });
   });
 
-  /* ========================= */
+  // =========================
+  // 🎧 MUTE PRIVADO (A → B)
+  // =========================
   socket.on("toggle-mute-user", ({ targetId }) => {
-    if (!socket.user) return;
 
-    const ownerId = socket.user.id;
-    const key = pairKey(ownerId, targetId);
+    const k = key(socket.id, targetId);
 
-    const target = activeUsers.get(targetId);
-    if (!target) return;
+    if (privateMute.has(k)) {
+      privateMute.delete(k);
 
-    if (privateMutes.has(key)) {
-      privateMutes.delete(key);
+      io.to(socket.id).emit("mute-update", {
+        targetId,
+        muted: false
+      });
 
-      io.to(socket.id).emit("user-unmuted", { targetId, ownerId });
-      io.to(target.socketId).emit("user-unmuted", { targetId: ownerId, ownerId });
+      io.to(targetId).emit("mute-update", {
+        targetId: socket.id,
+        muted: false
+      });
 
       return;
     }
 
-    privateMutes.set(key, true);
+    privateMute.add(k);
 
-    io.to(socket.id).emit("user-muted", { targetId, ownerId });
-    io.to(target.socketId).emit("user-muted", { targetId: ownerId, ownerId });
+    io.to(socket.id).emit("mute-update", {
+      targetId,
+      muted: true
+    });
+
+    io.to(targetId).emit("mute-update", {
+      targetId: socket.id,
+      muted: true
+    });
   });
 
-  /* ========================= */
+  // =========================
+  // 🔇 SELF MUTE
+  // =========================
+  socket.on("self-mute", (state) => {
+    const v = voiceState.get(socket.id);
+    if (!v) return;
+    v.muted = state;
+  });
+
+  // =========================
+  // 🛑 SERVER MUTE (admin system básico)
+  // =========================
+  socket.on("server-mute", ({ targetId, state }) => {
+    const v = voiceState.get(targetId);
+    if (!v) return;
+
+    v.serverMuted = state;
+
+    io.to(targetId).emit("server-mute-update", {
+      muted: state
+    });
+  });
+
+  // =========================
+  // 🔇 DEAF (não ouve ninguém)
+  // =========================
+  socket.on("deafen", (state) => {
+    const v = voiceState.get(socket.id);
+    if (!v) return;
+    v.deaf = state;
+
+    socket.emit("deafen-update", { deaf: state });
+  });
+
+  // =========================
+  // DISCONNECT
+  // =========================
   socket.on("disconnect", () => {
+
     if (socket.user) {
-      activeUsers.delete(socket.user.id);
-      removeAllMutes(socket.user.id);
+      users.delete(socket.user.id);
     }
+
+    voiceState.delete(socket.id);
 
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
-      emitRoomCount(socket.room);
+      emitRoomState(socket.room);
     }
   });
 });
 
 server.listen(3000, () => {
-  console.log("Servidor online");
+  console.log("Voice server online");
 });
