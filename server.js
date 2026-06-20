@@ -10,7 +10,7 @@ const io = new Server(server, {
 });
 
 // =========================
-// SALAS (mantido igual ao seu sistema)
+// SALAS (mantidas)
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -22,31 +22,50 @@ const ROOM_LIMITS = {
 
 // =========================
 // ESTADO GLOBAL
-const users = new Map(); 
-// userId -> socketId
+const users = new Map(); // userId -> socketId
 
 const voiceState = new Map();
-// socketId -> { muted, deaf, serverMuted }
+/*
+socketId => {
+  muted: bool,
+  deaf: bool,
+  serverMuted: bool
+}
+*/
 
-const privateMute = new Set();
-// "a-b"
+const permissions = new Map();
+/*
+userId => role (owner/admin/mod/user)
+*/
 
-const key = (a, b) => [a, b].sort().join("-");
+const privateActions = new Set();
+/*
+"a-b" mute privado
+*/
+
+// =========================
+
+const pair = (a, b) => [a, b].sort().join("-");
 
 function roomCount(room) {
   const r = io.sockets.adapter.rooms.get(room);
   return r ? r.size : 0;
 }
 
-function emitRoomState(room) {
-  io.to(room).emit("room-count", {
-    count: roomCount(room),
-    limit: ROOM_LIMITS[room] || 16
-  });
+// =========================
+// PERMISSÕES
+// =========================
+function getRole(userId) {
+  return permissions.get(userId) || "user";
+}
+
+function canModerate(role) {
+  return role === "owner" || role === "admin" || role === "moderator";
 }
 
 // =========================
-
+// SOCKET
+// =========================
 io.on("connection", (socket) => {
 
   voiceState.set(socket.id, {
@@ -74,21 +93,24 @@ io.on("connection", (socket) => {
 
     users.set(user.id, socket.id);
 
-    const peers = Array.from(io.sockets.adapter.rooms.get(room) || [])
+    const list = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
       .map(id => {
         const s = io.sockets.sockets.get(id);
         return { id, user: s?.user };
       });
 
-    socket.emit("room-users", peers);
+    socket.emit("room-users", list);
 
     socket.to(room).emit("user-joined", {
       id: socket.id,
       user
     });
 
-    emitRoomState(room);
+    io.to(room).emit("room-count", {
+      count: roomCount(room),
+      limit
+    });
   });
 
   // =========================
@@ -102,14 +124,14 @@ io.on("connection", (socket) => {
   });
 
   // =========================
-  // 🎧 MUTE PRIVADO (A → B)
+  // 🎧 MUTE PRIVADO
   // =========================
   socket.on("toggle-mute-user", ({ targetId }) => {
 
-    const k = key(socket.id, targetId);
+    const key = pair(socket.id, targetId);
 
-    if (privateMute.has(k)) {
-      privateMute.delete(k);
+    if (privateActions.has(key)) {
+      privateActions.delete(key);
 
       io.to(socket.id).emit("mute-update", {
         targetId,
@@ -124,7 +146,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    privateMute.add(k);
+    privateActions.add(key);
 
     io.to(socket.id).emit("mute-update", {
       targetId,
@@ -142,14 +164,18 @@ io.on("connection", (socket) => {
   // =========================
   socket.on("self-mute", (state) => {
     const v = voiceState.get(socket.id);
-    if (!v) return;
-    v.muted = state;
+    if (v) v.muted = state;
   });
 
   // =========================
-  // 🛑 SERVER MUTE (admin system básico)
+  // 🛑 SERVER MUTE (PERMISSÃO)
   // =========================
   socket.on("server-mute", ({ targetId, state }) => {
+
+    const requesterRole = getRole(socket.user?.id);
+
+    if (!canModerate(requesterRole)) return;
+
     const v = voiceState.get(targetId);
     if (!v) return;
 
@@ -161,14 +187,36 @@ io.on("connection", (socket) => {
   });
 
   // =========================
-  // 🔇 DEAF (não ouve ninguém)
+  // 🔇 DEAF
   // =========================
   socket.on("deafen", (state) => {
     const v = voiceState.get(socket.id);
-    if (!v) return;
-    v.deaf = state;
+    if (v) v.deaf = state;
 
     socket.emit("deafen-update", { deaf: state });
+  });
+
+  // =========================
+  // 🎯 AÇÃO GENÉRICA (EXTENSÍVEL)
+  // =========================
+  socket.on("action", ({ type, payload }) => {
+
+    switch(type) {
+
+      case "kick":
+        socket.leave(socket.room);
+        socket.emit("kicked");
+        break;
+
+      case "set-role":
+        permissions.set(payload.userId, payload.role);
+        break;
+
+      case "lock-room":
+        ROOM_LIMITS[socket.room] = 0;
+        break;
+
+    }
   });
 
   // =========================
@@ -184,11 +232,14 @@ io.on("connection", (socket) => {
 
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
-      emitRoomState(socket.room);
+      io.to(socket.room).emit("room-count", {
+        count: roomCount(socket.room),
+        limit: ROOM_LIMITS[socket.room] || 16
+      });
     }
   });
 });
 
 server.listen(3000, () => {
-  console.log("Voice server online");
+  console.log("Servidor completo online");
 });
