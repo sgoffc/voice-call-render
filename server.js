@@ -10,18 +10,19 @@ const io = new Server(server, {
 });
 
 /* ========================= */
-/* ESTADO GLOBAL */
-const users = new Map();
-// userId -> { socketId, user, room, mutedSelf }
-
-const socketToUser = new Map();
-// socketId -> userId
-
-const mutePairs = new Set();
-// "a-b"
+/* CONTROLE DE USUÁRIOS */
+const activeUsers = new Map();
 
 /* ========================= */
-/* SALAS */
+/* BLOQUEIO (mantido original) */
+const blockedPairs = new Set();
+
+function pairKey(a, b) {
+  return [a, b].sort().join("-");
+}
+
+/* ========================= */
+/* SALAS COM LIMITE */
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -32,84 +33,74 @@ const ROOM_LIMITS = {
 };
 
 /* ========================= */
-function keyPair(a, b) {
-  return [a, b].sort().join("-");
+/* 🎧 SISTEMA DE MÚSICA POR SALA */
+const roomMusic = new Map();
+
+function getMusicRoom(room) {
+  if (!roomMusic.has(room)) {
+    roomMusic.set(room, {
+      hostId: null,
+      botActive: false,
+      music: {
+        url: "",
+        isPlaying: false,
+        startedAt: 0,
+        volume: 1
+      }
+    });
+  }
+  return roomMusic.get(room);
 }
 
-/* ========================= */
-/* ENVIAR ESTADO COMPLETO DA SALA */
-function emitRoomState(room) {
-  const roomSockets = io.sockets.adapter.rooms.get(room);
-  if (!roomSockets) return;
-
-  const list = Array.from(roomSockets).map((socketId) => {
-    const s = io.sockets.sockets.get(socketId);
-    const userId = socketToUser.get(socketId);
-
-    return {
-      socketId,
-      userId,
-      user: s?.user || null,
-      mutedSelf: s?.mutedSelf || false
-    };
-  });
-
-  io.to(room).emit("room-users", list);
-}
-
-/* ========================= */
-io.on("connection", (socket) => {
-
-  socket.mutedSelf = false;
-
-  console.log("connect:", socket.id);
+io.on("connection", socket => {
+  console.log("Conectou:", socket.id);
 
   /* ========================= */
   /* JOIN ROOM */
   socket.on("join-room", ({ room, user }) => {
-    if (!room || !user?.id) return;
 
     const limit = ROOM_LIMITS[room] || 16;
 
-    /* remove duplicado */
-    if (users.has(user.id)) {
-      const old = users.get(user.id);
-      const oldSocket = io.sockets.sockets.get(old.socketId);
+    if (activeUsers.has(user.id)) {
+      const oldSocketId = activeUsers.get(user.id);
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
       if (oldSocket) oldSocket.disconnect(true);
     }
 
-    const roomSize = io.sockets.adapter.rooms.get(room)?.size || 0;
+    const roomSet = io.sockets.adapter.rooms.get(room);
+    const roomSize = roomSet ? roomSet.size : 0;
 
     if (roomSize >= limit) {
       socket.emit("room-full", { room, limit, current: roomSize });
       return;
     }
 
-    socket.join(room);
+    activeUsers.set(user.id, socket.id);
 
+    socket.join(room);
     socket.user = user;
     socket.room = room;
 
-    users.set(user.id, {
-      socketId: socket.id,
-      user,
-      room,
-      mutedSelf: false
-    });
+    const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
+      .filter(id => id !== socket.id)
+      .map(id => {
+        const s = io.sockets.sockets.get(id);
+        return { id, user: s?.user };
+      });
 
-    socketToUser.set(socket.id, user.id);
-
-    emitRoomState(room);
+    socket.emit("room-users", clients);
 
     socket.to(room).emit("user-joined", {
-      socketId: socket.id,
+      id: socket.id,
       user
     });
+
+    console.log(`User ${user.name} entrou em ${room}`);
   });
 
   /* ========================= */
-  /* SIGNAL (WEBRTC) */
-  socket.on("signal", (data) => {
+  /* SIGNAL WEBRTC */
+  socket.on("signal", data => {
     io.to(data.to).emit("signal", {
       from: socket.id,
       signal: data.signal
@@ -117,74 +108,139 @@ io.on("connection", (socket) => {
   });
 
   /* ========================= */
-  /* MUTE ENTRE USUÁRIOS */
-  socket.on("toggle-mute-user", ({ targetSocketId }) => {
-
+  /* MUTE */
+  socket.on("toggle-mute-user", ({ targetId }) => {
     const from = socket.id;
-    const key = keyPair(from, targetSocketId);
+    const key = pairKey(from, targetId);
 
-    const target = io.sockets.sockets.get(targetSocketId);
-    if (!target) return;
+    const isBlocked = blockedPairs.has(key);
 
-    if (mutePairs.has(key)) {
-      mutePairs.delete(key);
-
-      io.to(from).emit("user-unmuted", { targetSocketId });
-      io.to(targetSocketId).emit("user-unmuted", { targetSocketId: from });
-
+    if (isBlocked) {
+      blockedPairs.delete(key);
+      io.to(from).emit("user-unmuted", { targetId });
+      io.to(targetId).emit("user-unmuted", { targetId: from });
     } else {
-      mutePairs.add(key);
-
-      io.to(from).emit("user-muted", { targetSocketId });
-      io.to(targetSocketId).emit("user-muted", { targetSocketId: from });
+      blockedPairs.add(key);
+      io.to(from).emit("user-muted", { targetId });
+      io.to(targetId).emit("user-muted", { targetId: from });
     }
-
-    emitRoomState(socket.room);
   });
 
   /* ========================= */
-  /* SELF MUTE */
-  socket.on("toggle-self-mute", () => {
-    socket.mutedSelf = !socket.mutedSelf;
+  /* 🤖 BOT SPAWN */
+  socket.on("bot:spawn", ({ room }) => {
+    const state = getMusicRoom(room);
 
-    const userId = socketToUser.get(socket.id);
-    if (users.has(userId)) {
-      users.get(userId).mutedSelf = socket.mutedSelf;
+    if (state.botActive) {
+      socket.emit("bot:error", { message: "Bot já ativo" });
+      return;
     }
 
-    emitRoomState(socket.room);
+    state.botActive = true;
+    state.hostId = socket.id;
 
-    io.to(socket.room).emit("user-self-mute", {
-      socketId: socket.id,
-      muted: socket.mutedSelf
+    io.to(room).emit("bot:spawned", {
+      hostId: socket.id
     });
+  });
+
+  /* ========================= */
+  /* 🚪 BOT LEAVE */
+  socket.on("bot:leave", ({ room }) => {
+    const state = getMusicRoom(room);
+
+    if (state.hostId !== socket.id) return;
+
+    state.botActive = false;
+    state.hostId = null;
+    state.music.isPlaying = false;
+
+    io.to(room).emit("bot:left");
+  });
+
+  /* ========================= */
+  /* 🎵 SET MUSIC */
+  socket.on("music:set", ({ room, url }) => {
+    const state = getMusicRoom(room);
+
+    if (state.hostId !== socket.id) return;
+
+    state.music.url = url;
+
+    io.to(room).emit("music:set", { url });
+  });
+
+  /* ========================= */
+  /* ▶️ PLAY */
+  socket.on("music:play", ({ room }) => {
+    const state = getMusicRoom(room);
+
+    if (state.hostId !== socket.id) return;
+
+    state.music.isPlaying = true;
+    state.music.startedAt = Date.now();
+
+    io.to(room).emit("music:play", {
+      url: state.music.url,
+      startTimestamp: state.music.startedAt,
+      volume: state.music.volume
+    });
+  });
+
+  /* ========================= */
+  /* ⏸️ PAUSE */
+  socket.on("music:pause", ({ room }) => {
+    const state = getMusicRoom(room);
+
+    if (state.hostId !== socket.id) return;
+
+    state.music.isPlaying = false;
+
+    io.to(room).emit("music:pause");
+  });
+
+  /* ========================= */
+  /* 🔊 VOLUME */
+  socket.on("music:volume", ({ room, volume }) => {
+    const state = getMusicRoom(room);
+
+    if (state.hostId !== socket.id) return;
+
+    state.music.volume = volume;
+
+    io.to(room).emit("music:volume", { volume });
   });
 
   /* ========================= */
   /* DISCONNECT */
   socket.on("disconnect", () => {
 
-    const userId = socketToUser.get(socket.id);
-
-    if (userId) {
-      users.delete(userId);
-      socketToUser.delete(socket.id);
+    if (socket.user && activeUsers.get(socket.user.id) === socket.id) {
+      activeUsers.delete(socket.user.id);
     }
 
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
-      emitRoomState(socket.room);
+
+      const state = roomMusic.get(socket.room);
+
+      if (state && state.hostId === socket.id) {
+        state.botActive = false;
+        state.hostId = null;
+
+        socket.to(socket.room).emit("bot:left");
+      }
     }
 
-    for (const k of mutePairs) {
-      if (k.includes(socket.id)) mutePairs.delete(k);
+    for (const key of blockedPairs) {
+      if (key.includes(socket.id)) {
+        blockedPairs.delete(key);
+      }
     }
 
-    console.log("disconnect:", socket.id);
+    console.log("Saiu:", socket.id);
   });
-
 });
 
-server.listen(3000, () => {
-  console.log("server online");
-});
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log("Servidor online"));
