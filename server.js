@@ -11,17 +11,14 @@ const io = new Server(server, {
 
 /* ========================= */
 /* ESTADO GLOBAL */
-const activeUsers = new Map(); 
-// userId -> { socketId, room, user }
+const users = new Map();
+// userId -> { socketId, user, room, mutedSelf }
 
 const socketToUser = new Map();
 // socketId -> userId
 
-const blockedPairs = new Set();
-
-function pairKey(a, b) {
-  return [a, b].sort().join("-");
-}
+const mutePairs = new Set();
+// "a-b"
 
 /* ========================= */
 /* SALAS */
@@ -35,84 +32,84 @@ const ROOM_LIMITS = {
 };
 
 /* ========================= */
-/* ENVIAR LISTA ATUALIZADA DA SALA (🔥 NOVO CORE) */
-function broadcastRoomUsers(room) {
-  const roomSockets = io.sockets.adapter.rooms.get(room);
-
-  if (!roomSockets) return;
-
-  const users = Array.from(roomSockets).map(socketId => {
-    const s = io.sockets.sockets.get(socketId);
-    return {
-      socketId,
-      user: s?.user || null,
-      muted: s?.muted || false
-    };
-  });
-
-  io.to(room).emit("room-users", users);
+function keyPair(a, b) {
+  return [a, b].sort().join("-");
 }
 
 /* ========================= */
-io.on("connection", socket => {
+/* ENVIAR ESTADO COMPLETO DA SALA */
+function emitRoomState(room) {
+  const roomSockets = io.sockets.adapter.rooms.get(room);
+  if (!roomSockets) return;
 
-  socket.muted = false;
+  const list = Array.from(roomSockets).map((socketId) => {
+    const s = io.sockets.sockets.get(socketId);
+    const userId = socketToUser.get(socketId);
 
-  console.log("Conectou:", socket.id);
+    return {
+      socketId,
+      userId,
+      user: s?.user || null,
+      mutedSelf: s?.mutedSelf || false
+    };
+  });
+
+  io.to(room).emit("room-users", list);
+}
+
+/* ========================= */
+io.on("connection", (socket) => {
+
+  socket.mutedSelf = false;
+
+  console.log("connect:", socket.id);
 
   /* ========================= */
-  /* JOIN ROOM (REFORÇADO MAS MESMA LÓGICA) */
+  /* JOIN ROOM */
   socket.on("join-room", ({ room, user }) => {
+    if (!room || !user?.id) return;
 
     const limit = ROOM_LIMITS[room] || 16;
 
-    if (!room || !user?.id) return;
-
-    /* remove login duplicado */
-    if (activeUsers.has(user.id)) {
-      const old = activeUsers.get(user.id);
+    /* remove duplicado */
+    if (users.has(user.id)) {
+      const old = users.get(user.id);
       const oldSocket = io.sockets.sockets.get(old.socketId);
       if (oldSocket) oldSocket.disconnect(true);
     }
 
-    const roomSet = io.sockets.adapter.rooms.get(room);
-    const roomSize = roomSet ? roomSet.size : 0;
+    const roomSize = io.sockets.adapter.rooms.get(room)?.size || 0;
 
     if (roomSize >= limit) {
-      socket.emit("room-full", {
-        room,
-        limit,
-        current: roomSize
-      });
+      socket.emit("room-full", { room, limit, current: roomSize });
       return;
     }
 
     socket.join(room);
+
     socket.user = user;
     socket.room = room;
 
-    activeUsers.set(user.id, {
+    users.set(user.id, {
       socketId: socket.id,
+      user,
       room,
-      user
+      mutedSelf: false
     });
 
     socketToUser.set(socket.id, user.id);
 
-    /* 🔥 IMPORTANTE: envia lista atualizada PRA TODOS */
-    broadcastRoomUsers(room);
+    emitRoomState(room);
 
     socket.to(room).emit("user-joined", {
-      id: socket.id,
+      socketId: socket.id,
       user
     });
-
-    console.log(`User ${user.name} entrou em ${room}`);
   });
 
   /* ========================= */
-  /* SIGNAL WEBRTC (mantido) */
-  socket.on("signal", data => {
+  /* SIGNAL (WEBRTC) */
+  socket.on("signal", (data) => {
     io.to(data.to).emit("signal", {
       from: socket.id,
       signal: data.signal
@@ -120,76 +117,74 @@ io.on("connection", socket => {
   });
 
   /* ========================= */
-  /* MUTE REAL MELHORADO */
-  socket.on("toggle-mute-user", ({ targetId }) => {
+  /* MUTE ENTRE USUÁRIOS */
+  socket.on("toggle-mute-user", ({ targetSocketId }) => {
 
     const from = socket.id;
-    const key = pairKey(from, targetId);
+    const key = keyPair(from, targetSocketId);
 
-    const targetSocket = io.sockets.sockets.get(targetId);
+    const target = io.sockets.sockets.get(targetSocketId);
+    if (!target) return;
 
-    if (!targetSocket) return;
+    if (mutePairs.has(key)) {
+      mutePairs.delete(key);
 
-    const isMuted = blockedPairs.has(key);
-
-    if (isMuted) {
-      blockedPairs.delete(key);
-
-      io.to(from).emit("user-unmuted", { targetId });
-      io.to(targetId).emit("user-unmuted", { targetId: from });
+      io.to(from).emit("user-unmuted", { targetSocketId });
+      io.to(targetSocketId).emit("user-unmuted", { targetSocketId: from });
 
     } else {
-      blockedPairs.add(key);
+      mutePairs.add(key);
 
-      io.to(from).emit("user-muted", { targetId });
-      io.to(targetId).emit("user-muted", { targetId: from });
+      io.to(from).emit("user-muted", { targetSocketId });
+      io.to(targetSocketId).emit("user-muted", { targetSocketId: from });
     }
 
-    /* 🔥 atualiza UI de todos */
-    const room = socket.room;
-    if (room) broadcastRoomUsers(room);
+    emitRoomState(socket.room);
   });
 
   /* ========================= */
-  /* MUTE GLOBAL (NOVO) */
+  /* SELF MUTE */
   socket.on("toggle-self-mute", () => {
-    socket.muted = !socket.muted;
+    socket.mutedSelf = !socket.mutedSelf;
 
-    const room = socket.room;
-    if (room) broadcastRoomUsers(room);
+    const userId = socketToUser.get(socket.id);
+    if (users.has(userId)) {
+      users.get(userId).mutedSelf = socket.mutedSelf;
+    }
 
-    io.to(room).emit("user-self-mute", {
+    emitRoomState(socket.room);
+
+    io.to(socket.room).emit("user-self-mute", {
       socketId: socket.id,
-      muted: socket.muted
+      muted: socket.mutedSelf
     });
   });
 
   /* ========================= */
-  /* DISCONNECT (REFORÇADO) */
+  /* DISCONNECT */
   socket.on("disconnect", () => {
 
     const userId = socketToUser.get(socket.id);
 
     if (userId) {
-      activeUsers.delete(userId);
+      users.delete(userId);
       socketToUser.delete(socket.id);
     }
 
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
-      broadcastRoomUsers(socket.room);
+      emitRoomState(socket.room);
     }
 
-    for (const key of blockedPairs) {
-      if (key.includes(socket.id)) {
-        blockedPairs.delete(key);
-      }
+    for (const k of mutePairs) {
+      if (k.includes(socket.id)) mutePairs.delete(k);
     }
 
-    console.log("Saiu:", socket.id);
+    console.log("disconnect:", socket.id);
   });
+
 });
 
 server.listen(3000, () => {
-  console.log("Servidor online");
+  console.log("server online");
 });
