@@ -10,7 +10,6 @@ const io = new Server(server, {
 });
 
 /* ========================= */
-/* ROOMS */
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -23,7 +22,7 @@ const ROOM_LIMITS = {
 /* ========================= */
 /* STATE */
 const activeUsers = new Map(); // userId -> { socketId, room }
-const privateMutes = new Map();
+const privateMutes = new Map(); // "a-b" -> true
 
 function pairKey(a, b) {
   return [a, b].sort().join("-");
@@ -42,21 +41,21 @@ function emitRoomCount(room) {
 
 function removeAllMutes(userId) {
   for (const [key, data] of privateMutes) {
-    if (data.userA === userId || data.userB === userId) {
+    if (key.includes(userId)) {
       privateMutes.delete(key);
     }
   }
 }
 
+/* ========================= */
 io.on("connection", (socket) => {
-  console.log("Connect:", socket.id);
 
-  /* JOIN */
   socket.on("join-room", ({ room, user }) => {
     if (!room || !user?.id) return;
 
     const limit = ROOM_LIMITS[room] || 16;
 
+    // remove duplicado
     if (activeUsers.has(user.id)) {
       const old = activeUsers.get(user.id);
       io.sockets.sockets.get(old.socketId)?.disconnect(true);
@@ -80,11 +79,12 @@ io.on("connection", (socket) => {
       room
     });
 
+    // lista usuários
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
-      .filter((id) => id !== socket.id)
-      .map((id) => {
+      .filter(id => id !== socket.id)
+      .map(id => {
         const s = io.sockets.sockets.get(id);
-        return { id, user: s?.user };
+        return { id: s?.user?.id || id, user: s?.user };
       });
 
     socket.emit("room-users", clients);
@@ -97,7 +97,7 @@ io.on("connection", (socket) => {
     emitRoomCount(room);
   });
 
-  /* SIGNAL */
+  /* ========================= */
   socket.on("signal", ({ to, signal }) => {
     io.to(to).emit("signal", {
       from: socket.id,
@@ -105,7 +105,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  /* MUTE */
+  /* ========================= */
   socket.on("toggle-mute-user", ({ targetId }) => {
     if (!socket.user) return;
 
@@ -124,25 +124,13 @@ io.on("connection", (socket) => {
       return;
     }
 
-    privateMutes.set(key, {
-      userA: ownerId,
-      userB: targetId
-    });
+    privateMutes.set(key, true);
 
-    io.to(socket.id).emit("user-muted", {
-      targetId,
-      ownerId,
-      canUnmute: true
-    });
-
-    io.to(target.socketId).emit("user-muted", {
-      targetId: ownerId,
-      ownerId,
-      canUnmute: false
-    });
+    io.to(socket.id).emit("user-muted", { targetId, ownerId });
+    io.to(target.socketId).emit("user-muted", { targetId: ownerId, ownerId });
   });
 
-  /* DISCONNECT */
+  /* ========================= */
   socket.on("disconnect", () => {
     if (socket.user) {
       activeUsers.delete(socket.user.id);
@@ -156,4 +144,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(3000, () => console.log("Server ON"));
+server.listen(3000, () => {
+  console.log("Servidor online");
+});
