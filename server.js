@@ -23,13 +23,12 @@ function pairKey(a, b) {
 
 /* ========================= */
 /* SALAS COM LIMITE (FONTE ÚNICA REAL) */
-const ROOM_LIMITS = {
-  "sala-geral": 16,
-  "sala-events": 10,
-  "sala-duo": 2,
-  "sala-duo2": 2,
-  "sala-squad": 4,
-  "sala-squad2": 4
+const ROOM_PASSWORDS = {
+  "sala-events": "123456",
+  "sala-duo": "duo123",
+  "sala-duo2": "duo456",
+  "sala-squad": "squad123",
+  "sala-squad2": "squad456"
 };
 
 io.on("connection", socket => {
@@ -38,7 +37,17 @@ io.on("connection", socket => {
   /* ========================= */
   /* JOIN ROOM (CORRIGIDO DE VERDADE) */
   socket.on("join-room", ({ room, user }) => {
+const roomPassword = ROOM_PASSWORDS[data.room];
 
+if (roomPassword && data.password !== roomPassword) {
+
+  socket.emit(
+    "join-error",
+    "Senha incorreta!"
+  );
+
+  return;
+}
     const limit = ROOM_LIMITS[room] || 16;
 
     /* remove usuário antigo (evita duplicação invisível) */
