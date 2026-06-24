@@ -36,15 +36,12 @@ io.on("connection", socket => {
 
   /* ========================= */
   /* JOIN ROOM (CORRIGIDO DE VERDADE) */
-  socket.on("join-room", ({ room, user }) => {
-const roomPassword = ROOM_PASSWORDS[data.room];
+  socket.on("join-room", ({ room, password, user }) => {
+const roomPassword = ROOM_PASSWORDS[room];
 
-if (roomPassword && data.password !== roomPassword) {
+if (roomPassword && password !== roomPassword) {
 
-  socket.emit(
-    "join-error",
-    "Senha incorreta!"
-  );
+  socket.emit("join-error", "Senha incorreta!");
 
   return;
 }
