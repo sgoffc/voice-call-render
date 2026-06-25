@@ -10,7 +10,7 @@ const io = new Server(server, {
 });
 
 /* ========================= */
-/* CONTROLE DE USUĆRIOS */
+/* CONTROLE DE USUÁRIOS */
 const activeUsers = new Map();
 
 /* ========================= */
@@ -22,12 +22,11 @@ function pairKey(a, b) {
 }
 
 /* ========================= */
-/* SALAS COM LIMITE (FONTE ĆNICA REAL) */
+/* SALAS COM LIMITE (FONTE ÚNICA REAL) */
 const ROOM_PASSWORDS = {
-  "sala-events": "sgoffc",
-  "sala-liders": "Fenix"
+  "sala-liders": "123456"
 };
-  
+
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
@@ -81,7 +80,7 @@ socket.on("join-room", ({ room, password, user }) => {
   socket.user = user;
   socket.room = room;
 
-    /* lista usuĆ�rios atuais */
+    /* lista usuários atuais */
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
       .map(id => {
