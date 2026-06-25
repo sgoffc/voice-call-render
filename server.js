@@ -82,7 +82,7 @@ socket.on("join-room", ({ room, password, user }) => {
   socket.join(room);
   socket.user = user;
   socket.room = room;
-
+  socket.emit("room-joined", { user });
     /* lista usuários atuais */
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
