@@ -46,37 +46,35 @@ io.on("connection", socket => {
   /* JOIN ROOM (CORRIGIDO DE VERDADE) */
 socket.on("join-room", ({ room, password, user }) => {
 
-  const config = ROOMS[room];
+  const roomPassword = ROOM_PASSWORDS[room];
 
-  if (!config) {
-    socket.emit("join-error", "Sala inexistente");
-    return;
-  }
-
-  // senha
-  if (config.password && config.password !== password) {
+  if (roomPassword && password !== roomPassword) {
     socket.emit("join-error", "Senha incorreta!");
     return;
   }
 
-  // limite
-  const roomSet = io.sockets.adapter.rooms.get(room);
-  const roomSize = roomSet ? roomSet.size : 0;
+  const limit = ROOM_LIMITS[room] || 16;
 
-  if (roomSize >= config.limit) {
-    socket.emit("room-full", {
-      room,
-      limit: config.limit,
-      current: roomSize
-    });
-    return;
-  }
-
-  // remove duplicado
   if (activeUsers.has(user.id)) {
     const oldSocketId = activeUsers.get(user.id);
     const oldSocket = io.sockets.sockets.get(oldSocketId);
-    if (oldSocket) oldSocket.disconnect(true);
+
+    if (oldSocket) {
+      oldSocket.disconnect(true);
+    }
+  }
+
+  const roomSet = io.sockets.adapter.rooms.get(room);
+  const roomSize = roomSet ? roomSet.size : 0;
+
+  if (roomSize >= limit) {
+    socket.emit("room-full", {
+      room,
+      limit,
+      current: roomSize
+    });
+
+    return;
   }
 
   activeUsers.set(user.id, socket.id);
@@ -84,24 +82,33 @@ socket.on("join-room", ({ room, password, user }) => {
   socket.join(room);
   socket.user = user;
   socket.room = room;
-
   socket.emit("room-joined", { user });
+    /* lista usuários atuais */
+    const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
+      .filter(id => id !== socket.id)
+      .map(id => {
+        const s = io.sockets.sockets.get(id);
+        return { id, user: s?.user };
+      });
 
-  const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
-    .filter(id => id !== socket.id)
-    .map(id => {
-      const s = io.sockets.sockets.get(id);
-      return { id, user: s?.user };
+    socket.emit("room-users", clients);
+
+    socket.to(room).emit("user-joined", {
+      id: socket.id,
+      user
     });
 
-  socket.emit("room-users", clients);
-
-  socket.to(room).emit("user-joined", {
-    id: socket.id,
-    user
+    console.log(`User ${user.name} entrou em ${room} (${roomSize + 1}/${limit})`);
   });
 
-});
+  /* ========================= */
+  /* SIGNAL WEBRTC (INALTERADO) */
+  socket.on("signal", data => {
+    io.to(data.to).emit("signal", {
+      from: socket.id,
+      signal: data.signal
+    });
+  });
 
   /* ========================= */
   /* MUTE BIDIRECIONAL (INALTERADO) */
