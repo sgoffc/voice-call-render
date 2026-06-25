@@ -31,6 +31,14 @@ const ROOM_PASSWORDS = {
   "sala-squad2": "squad456"
 };
 
+ const protectedRooms = [
+    "sala-events",
+    "sala-duo",
+    "sala-duo2",
+    "sala-squad",
+    "sala-squad2"
+  ];
+  
 const ROOM_LIMITS = {
   "sala-geral": 16,
   "sala-events": 10,
