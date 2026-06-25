@@ -10,102 +10,97 @@ const io = new Server(server, {
 });
 
 /* ========================= */
-/* CONTROLE DE USUÁRIOS */
-const activeUsers = new Map();
+/* SALAS (FONTE ÚNICA) */
+const ROOMS = {
+  "sala-geral": { limit: 16, password: null },
+  "sala-events": { limit: 10, password: "123456" },
+  "sala-duo": { limit: 2, password: "duo123" },
+  "sala-duo2": { limit: 2, password: "duo456" },
+  "sala-squad": { limit: 4, password: "squad123" },
+  "sala-squad2": { limit: 4, password: "squad456" }
+};
 
 /* ========================= */
-/* BLOQUEIO (mantido original) */
+/* ESTADOS */
+const activeUsers = new Map(); // user.id -> socket.id
 const blockedPairs = new Set();
 
+/* ========================= */
 function pairKey(a, b) {
   return [a, b].sort().join("-");
 }
 
 /* ========================= */
-/* SALAS COM LIMITE (FONTE ÚNICA REAL) */
-const ROOM_PASSWORDS = {
-  "sala-events": "123456",
-  "sala-duo": "duo123",
-  "sala-duo2": "duo456",
-  "sala-squad": "squad123",
-  "sala-squad2": "squad456"
-};
-
-const ROOM_LIMITS = {
-  "sala-geral": 16,
-  "sala-events": 10,
-  "sala-duo": 2,
-  "sala-duo2": 2,
-  "sala-squad": 4,
-  "sala-squad2": 4
-};
-io.on("connection", socket => {
+/* SOCKET */
+io.on("connection", (socket) => {
   console.log("Conectou:", socket.id);
 
+  /* envia config para frontend */
+  socket.emit("room-config", ROOMS);
+
   /* ========================= */
-  /* JOIN ROOM (CORRIGIDO DE VERDADE) */
-socket.on("join-room", ({ room, password, user }) => {
+  /* JOIN ROOM */
+  socket.on("join-room", ({ room, password, user }) => {
 
-  const config = ROOMS[room];
+    const config = ROOMS[room];
 
-  if (!config) {
-    socket.emit("join-error", "Sala inexistente");
-    return;
-  }
+    if (!config) {
+      socket.emit("join-error", "Sala inexistente");
+      return;
+    }
 
-  // senha
-  if (config.password && config.password !== password) {
-    socket.emit("join-error", "Senha incorreta!");
-    return;
-  }
+    /* senha */
+    if (config.password && config.password !== password) {
+      socket.emit("join-error", "Senha incorreta!");
+      return;
+    }
 
-  // limite
-  const roomSet = io.sockets.adapter.rooms.get(room);
-  const roomSize = roomSet ? roomSet.size : 0;
+    /* limite */
+    const roomSet = io.sockets.adapter.rooms.get(room);
+    const roomSize = roomSet ? roomSet.size : 0;
 
-  if (roomSize >= config.limit) {
-    socket.emit("room-full", {
-      room,
-      limit: config.limit,
-      current: roomSize
+    if (roomSize >= config.limit) {
+      socket.emit("room-full", {
+        room,
+        limit: config.limit,
+        current: roomSize
+      });
+      return;
+    }
+
+    /* remove duplicado (mesmo usuário em outro socket) */
+    if (activeUsers.has(user.id)) {
+      const oldSocketId = activeUsers.get(user.id);
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
+      if (oldSocket) oldSocket.disconnect(true);
+    }
+
+    activeUsers.set(user.id, socket.id);
+
+    socket.join(room);
+    socket.user = user;
+    socket.room = room;
+
+    /* lista atual da sala */
+    const clients = Array.from(io.sockets.sockets.values())
+      .filter(s => s.room === room && s.user)
+      .map(s => ({
+        id: s.id,
+        user: s.user
+      }));
+
+    socket.emit("room-users", clients);
+
+    socket.to(room).emit("user-joined", {
+      id: socket.id,
+      user
     });
-    return;
-  }
-
-  // remove duplicado
-  if (activeUsers.has(user.id)) {
-    const oldSocketId = activeUsers.get(user.id);
-    const oldSocket = io.sockets.sockets.get(oldSocketId);
-    if (oldSocket) oldSocket.disconnect(true);
-  }
-
-  activeUsers.set(user.id, socket.id);
-
-  socket.join(room);
-  socket.user = user;
-  socket.room = room;
-
-  socket.emit("room-joined", { user });
-
-  const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
-    .filter(id => id !== socket.id)
-    .map(id => {
-      const s = io.sockets.sockets.get(id);
-      return { id, user: s?.user };
-    });
-
-  socket.emit("room-users", clients);
-
-  socket.to(room).emit("user-joined", {
-    id: socket.id,
-    user
   });
 
-});
-
   /* ========================= */
-  /* MUTE BIDIRECIONAL (INALTERADO) */
+  /* MUTE (BIDIRECIONAL) */
   socket.on("toggle-mute-user", ({ targetId }) => {
+
     const from = socket.id;
     const key = pairKey(from, targetId);
 
@@ -126,26 +121,39 @@ socket.on("join-room", ({ room, password, user }) => {
   });
 
   /* ========================= */
+  /* SIGNAL (WEBRTC) */
+  socket.on("signal", (data) => {
+    io.to(data.to).emit("signal", {
+      from: socket.id,
+      signal: data.signal
+    });
+  });
+
+  /* ========================= */
   /* DISCONNECT */
   socket.on("disconnect", () => {
 
-    if (socket.user && activeUsers.get(socket.user.id) === socket.id) {
+    console.log("Saiu:", socket.id);
+
+    /* remove do activeUsers */
+    if (socket.user) {
       activeUsers.delete(socket.user.id);
     }
 
+    /* avisa sala */
     if (socket.room) {
       socket.to(socket.room).emit("user-left", socket.id);
     }
 
+    /* limpa bloqueios */
     for (const key of blockedPairs) {
       if (key.includes(socket.id)) {
         blockedPairs.delete(key);
       }
     }
-
-    console.log("Saiu:", socket.id);
   });
 });
 
+/* ========================= */
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log("Servidor online"));
+server.listen(PORT, () => console.log("Servidor online na porta", PORT));
