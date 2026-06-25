@@ -24,7 +24,11 @@ function pairKey(a, b) {
 /* ========================= */
 /* SALAS COM LIMITE (FONTE ÚNICA REAL) */
 const ROOM_PASSWORDS = {
-  "sala-liders": "123456"
+  "sala-events": "123456",
+  "sala-duo": "duo123",
+  "sala-duo2": "duo456",
+  "sala-squad": "squad123",
+  "sala-squad2": "squad456"
 };
 
 const ROOM_LIMITS = {
@@ -33,8 +37,7 @@ const ROOM_LIMITS = {
   "sala-duo": 2,
   "sala-duo2": 2,
   "sala-squad": 4,
-  "sala-squad2": 4,
-  "sala-liders": 4
+  "sala-squad2": 4
 };
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
@@ -43,35 +46,37 @@ io.on("connection", socket => {
   /* JOIN ROOM (CORRIGIDO DE VERDADE) */
 socket.on("join-room", ({ room, password, user }) => {
 
-  const roomPassword = ROOM_PASSWORDS[room];
+  const config = ROOMS[room];
 
-  if (roomPassword && password !== roomPassword) {
+  if (!config) {
+    socket.emit("join-error", "Sala inexistente");
+    return;
+  }
+
+  // senha
+  if (config.password && config.password !== password) {
     socket.emit("join-error", "Senha incorreta!");
     return;
   }
 
-  const limit = ROOM_LIMITS[room] || 16;
-
-  if (activeUsers.has(user.id)) {
-    const oldSocketId = activeUsers.get(user.id);
-    const oldSocket = io.sockets.sockets.get(oldSocketId);
-
-    if (oldSocket) {
-      oldSocket.disconnect(true);
-    }
-  }
-
+  // limite
   const roomSet = io.sockets.adapter.rooms.get(room);
   const roomSize = roomSet ? roomSet.size : 0;
 
-  if (roomSize >= limit) {
+  if (roomSize >= config.limit) {
     socket.emit("room-full", {
       room,
-      limit,
+      limit: config.limit,
       current: roomSize
     });
-
     return;
+  }
+
+  // remove duplicado
+  if (activeUsers.has(user.id)) {
+    const oldSocketId = activeUsers.get(user.id);
+    const oldSocket = io.sockets.sockets.get(oldSocketId);
+    if (oldSocket) oldSocket.disconnect(true);
   }
 
   activeUsers.set(user.id, socket.id);
@@ -80,32 +85,23 @@ socket.on("join-room", ({ room, password, user }) => {
   socket.user = user;
   socket.room = room;
 
-    /* lista usuários atuais */
-    const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
-      .filter(id => id !== socket.id)
-      .map(id => {
-        const s = io.sockets.sockets.get(id);
-        return { id, user: s?.user };
-      });
+  socket.emit("room-joined", { user });
 
-    socket.emit("room-users", clients);
-
-    socket.to(room).emit("user-joined", {
-      id: socket.id,
-      user
+  const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
+    .filter(id => id !== socket.id)
+    .map(id => {
+      const s = io.sockets.sockets.get(id);
+      return { id, user: s?.user };
     });
 
-    console.log(`User ${user.name} entrou em ${room} (${roomSize + 1}/${limit})`);
+  socket.emit("room-users", clients);
+
+  socket.to(room).emit("user-joined", {
+    id: socket.id,
+    user
   });
 
-  /* ========================= */
-  /* SIGNAL WEBRTC (INALTERADO) */
-  socket.on("signal", data => {
-    io.to(data.to).emit("signal", {
-      from: socket.id,
-      signal: data.signal
-    });
-  });
+});
 
   /* ========================= */
   /* MUTE BIDIRECIONAL (INALTERADO) */
