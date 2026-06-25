@@ -24,11 +24,8 @@ function pairKey(a, b) {
 /* ========================= */
 /* SALAS COM LIMITE (FONTE ĆNICA REAL) */
 const ROOM_PASSWORDS = {
-  "sala-events": "123456",
-  "sala-duo": "duo123",
-  "sala-duo2": "duo456",
-  "sala-squad": "squad123",
-  "sala-squad2": "squad456"
+  "sala-events": "sgoffc",
+  "sala-liders": "Fenix"
 };
   
 const ROOM_LIMITS = {
@@ -37,7 +34,8 @@ const ROOM_LIMITS = {
   "sala-duo": 2,
   "sala-duo2": 2,
   "sala-squad": 4,
-  "sala-squad2": 4
+  "sala-squad2": 4,
+  "sala-liders": 4
 };
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
