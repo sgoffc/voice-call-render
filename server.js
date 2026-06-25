@@ -31,58 +31,52 @@ const ROOM_PASSWORDS = {
   "sala-squad2": "squad456"
 };
 
-const ROOM_LIMITS = {
-  "sala-geral": 16,
-  "sala-events": 10,
-  "sala-duo": 2,
-  "sala-duo2": 2,
-  "sala-squad": 4,
-  "sala-squad2": 4
-};
 io.on("connection", socket => {
   console.log("Conectou:", socket.id);
 
   /* ========================= */
   /* JOIN ROOM (CORRIGIDO DE VERDADE) */
-socket.on("join-room", ({ room, password, user }) => {
+  socket.on("join-room", ({ room, user }) => {
+const roomPassword = ROOM_PASSWORDS[data.room];
 
-  const roomPassword = ROOM_PASSWORDS[room];
+if (roomPassword && data.password !== roomPassword) {
 
-  if (roomPassword && password !== roomPassword) {
-    socket.emit("join-error", "Senha incorreta!");
-    return;
-  }
+  socket.emit(
+    "join-error",
+    "Senha incorreta!"
+  );
 
-  const limit = ROOM_LIMITS[room] || 16;
+  return;
+}
+    const limit = ROOM_LIMITS[room] || 16;
 
-  if (activeUsers.has(user.id)) {
-    const oldSocketId = activeUsers.get(user.id);
-    const oldSocket = io.sockets.sockets.get(oldSocketId);
-
-    if (oldSocket) {
-      oldSocket.disconnect(true);
+    /* remove usuário antigo (evita duplicação invisível) */
+    if (activeUsers.has(user.id)) {
+      const oldSocketId = activeUsers.get(user.id);
+      const oldSocket = io.sockets.sockets.get(oldSocketId);
+      if (oldSocket) oldSocket.disconnect(true);
     }
-  }
 
-  const roomSet = io.sockets.adapter.rooms.get(room);
-  const roomSize = roomSet ? roomSet.size : 0;
+    const roomSet = io.sockets.adapter.rooms.get(room);
+    const roomSize = roomSet ? roomSet.size : 0;
 
-  if (roomSize >= limit) {
-    socket.emit("room-full", {
-      room,
-      limit,
-      current: roomSize
-    });
+    /* 🔥 CORREÇÃO PRINCIPAL:
+       bloqueia ANTES de entrar na sala */
+    if (roomSize >= limit) {
+      socket.emit("room-full", {
+        room,
+        limit,
+        current: roomSize
+      });
+      return;
+    }
 
-    return;
-  }
+    activeUsers.set(user.id, socket.id);
 
-  activeUsers.set(user.id, socket.id);
+    socket.join(room);
+    socket.user = user;
+    socket.room = room;
 
-  socket.join(room);
-  socket.user = user;
-  socket.room = room;
-  socket.emit("room-joined", { user });
     /* lista usuários atuais */
     const clients = Array.from(io.sockets.adapter.rooms.get(room) || [])
       .filter(id => id !== socket.id)
